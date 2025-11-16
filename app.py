@@ -3,8 +3,8 @@ import random
 import time
 from typing import Dict, List
 
-from flask import Flask, send_from_directory
-from flask_socketio import SocketIO, emit, request
+from flask import Flask, send_from_directory, request
+from flask_socketio import SocketIO, emit
 
 # -----------------------------------------------------------------------------
 # Game tuning constants (easy to tweak for balancing experiments)
