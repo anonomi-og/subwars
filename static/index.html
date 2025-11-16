@@ -37,9 +37,15 @@
 
         <section class="panel controls-panel">
           <h2>Controls</h2>
-          <div class="control">
-            <label id="heading-label" for="heading-slider">Heading: 0°</label>
-            <input type="range" id="heading-slider" min="0" max="359" />
+          <div class="control heading-control">
+            <label id="heading-label">Heading: 0° (N)</label>
+            <div id="heading-dial" class="heading-dial">
+              <div class="heading-pointer" id="heading-pointer"></div>
+              <div class="heading-cardinal north">N</div>
+              <div class="heading-cardinal east">E</div>
+              <div class="heading-cardinal south">S</div>
+              <div class="heading-cardinal west">W</div>
+            </div>
           </div>
           <div class="control">
             <label id="speed-label" for="speed-slider">Speed: 0 kn</label>
@@ -51,6 +57,12 @@
           </div>
           <div class="control">
             <button id="fire-btn">Fire Torpedo</button>
+          </div>
+          <div id="respawn-panel" class="respawn-panel hidden">
+            <h3>Sub Lost</h3>
+            <p id="respawn-message">You were hit!</p>
+            <p id="respawn-timer">Preparing replacement sub...</p>
+            <button id="respawn-btn" disabled>Respawn</button>
           </div>
         </section>
       </main>
