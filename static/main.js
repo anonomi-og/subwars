@@ -20,11 +20,11 @@ const sonarList = document.getElementById("sonar-list");
 const pingBtn = document.getElementById("ping-btn");
 const fireBtn = document.getElementById("fire-btn");
 
-const speedSlider = document.getElementById("speed-slider");
 const depthSlider = document.getElementById("depth-slider");
 const headingLabel = document.getElementById("heading-label");
 const speedLabel = document.getElementById("speed-label");
 const depthLabel = document.getElementById("depth-label");
+const speedTelegraph = document.getElementById("speed-telegraph");
 const headingDial = document.getElementById("heading-dial");
 const headingPointer = document.getElementById("heading-pointer");
 const respawnPanel = document.getElementById("respawn-panel");
@@ -38,11 +38,21 @@ const sonarCanvas = document.getElementById("sonar-canvas");
 const sonarCtx = sonarCanvas.getContext("2d");
 
 let currentHeading = 0;
+let currentSpeedOrder = 0;
 let headingDialActive = false;
 let respawnAvailableAt = null;
 let respawnCountdownInterval = null;
+const SPEED_ORDERS = [
+  { label: "All Stop", value: 0 },
+  { label: "1/4 Ahead", value: 1 },
+  { label: "1/2 Ahead", value: 2 },
+  { label: "3/4 Ahead", value: 3 },
+  { label: "Full Ahead", value: 4 },
+];
+const speedOrderButtons = [];
 
 updateHeadingDisplay(currentHeading);
+initializeSpeedTelegraph();
 
 function connectSocket() {
   if (socket) return;
@@ -177,11 +187,6 @@ headingDial.addEventListener("pointerleave", (event) => {
   headingDial.releasePointerCapture(event.pointerId);
 });
 
-speedSlider.addEventListener("input", () => {
-  speedLabel.textContent = `Speed: ${speedSlider.value} kn`;
-  sendControls();
-});
-
 depthSlider.addEventListener("input", () => {
   depthLabel.textContent = `Depth: ${depthSlider.value} m`;
   sendControls();
@@ -205,7 +210,7 @@ function sendControls() {
   if (!socket) return;
   socket.emit("update_controls", {
     heading: currentHeading,
-    speed: parseFloat(speedSlider.value),
+    speed: currentSpeedOrder,
     depth: parseFloat(depthSlider.value),
   });
 }
@@ -283,10 +288,63 @@ function handleRespawnState(you) {
     if (!headingDialActive && typeof you.heading === "number") {
       syncHeadingFromServer(you.heading);
     }
+    if (typeof you.speed === "number") {
+      syncSpeedFromServer(you.speed);
+    }
     return;
   }
   const message = respawnMessage.textContent || "You were hit.";
   showRespawnPanel(you.respawn_at, message, you.respawn_ready);
+}
+
+function initializeSpeedTelegraph() {
+  SPEED_ORDERS.forEach((order) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "telegraph-order";
+    button.textContent = order.label;
+    button.dataset.speedValue = order.value;
+    button.addEventListener("click", () => {
+      setSpeedOrder(order.value);
+    });
+    speedTelegraph.appendChild(button);
+    speedOrderButtons.push(button);
+  });
+  updateSpeedDisplay(currentSpeedOrder);
+}
+
+function setSpeedOrder(value) {
+  if (currentSpeedOrder === value) return;
+  currentSpeedOrder = value;
+  updateSpeedDisplay(value);
+  sendControls();
+}
+
+function syncSpeedFromServer(value) {
+  const order = findClosestSpeedOrder(value);
+  currentSpeedOrder = order.value;
+  updateSpeedDisplay(order.value);
+}
+
+function findClosestSpeedOrder(value) {
+  const target = typeof value === "number" ? value : 0;
+  return SPEED_ORDERS.reduce((closest, order) => {
+    const diff = Math.abs(order.value - target);
+    const bestDiff = Math.abs(closest.value - target);
+    return diff < bestDiff ? order : closest;
+  });
+}
+
+function updateSpeedDisplay(value) {
+  const order = findClosestSpeedOrder(value);
+  speedLabel.textContent =
+    order.value === 0
+      ? `Speed: ${order.label}`
+      : `Speed: ${order.label} (${order.value.toFixed(0)} kn)`;
+  speedOrderButtons.forEach((btn) => {
+    const btnValue = parseFloat(btn.dataset.speedValue);
+    btn.classList.toggle("active", btnValue === order.value);
+  });
 }
 
 function updateRespawnCountdown() {
