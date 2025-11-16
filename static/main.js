@@ -20,17 +20,29 @@ const sonarList = document.getElementById("sonar-list");
 const pingBtn = document.getElementById("ping-btn");
 const fireBtn = document.getElementById("fire-btn");
 
-const headingSlider = document.getElementById("heading-slider");
 const speedSlider = document.getElementById("speed-slider");
 const depthSlider = document.getElementById("depth-slider");
 const headingLabel = document.getElementById("heading-label");
 const speedLabel = document.getElementById("speed-label");
 const depthLabel = document.getElementById("depth-label");
+const headingDial = document.getElementById("heading-dial");
+const headingPointer = document.getElementById("heading-pointer");
+const respawnPanel = document.getElementById("respawn-panel");
+const respawnMessage = document.getElementById("respawn-message");
+const respawnTimer = document.getElementById("respawn-timer");
+const respawnBtn = document.getElementById("respawn-btn");
 
 const mapCanvas = document.getElementById("map-canvas");
 const mapCtx = mapCanvas.getContext("2d");
 const sonarCanvas = document.getElementById("sonar-canvas");
 const sonarCtx = sonarCanvas.getContext("2d");
+
+let currentHeading = 0;
+let headingDialActive = false;
+let respawnAvailableAt = null;
+let respawnCountdownInterval = null;
+
+updateHeadingDisplay(currentHeading);
 
 function connectSocket() {
   if (socket) return;
@@ -54,6 +66,7 @@ function connectSocket() {
     if (data.sonar_range) {
       SONAR_RANGE_CLIENT = data.sonar_range;
     }
+    handleRespawnState(data.you);
   });
 
   socket.on("system_message", (data) => {
@@ -61,7 +74,38 @@ function connectSocket() {
   });
 
   socket.on("sub_hit", (data) => {
-    addMessage(`🔥 ${data.victim_username} was hit!`);
+    if (data.attacker_username) {
+      addMessage(`🔥 ${data.victim_username} was hit by ${data.attacker_username}!`);
+    } else {
+      addMessage(`🔥 ${data.victim_username} was hit!`);
+    }
+  });
+
+  socket.on("hit_confirmed", (data) => {
+    addMessage(`✅ Direct hit on ${data.victim_username}!`);
+  });
+
+  socket.on("you_were_hit", (data) => {
+    const message = data.by_username
+      ? `You were hit by ${data.by_username}! Sub lost. Request a new hull once the crew is ready.`
+      : "You were hit! Sub lost. Request a new hull once the crew is ready.";
+    showRespawnPanel(data.respawn_available_at, message);
+  });
+
+  socket.on("respawn_ready", () => {
+    respawnAvailableAt = null;
+    updateRespawnCountdown();
+  });
+
+  socket.on("respawn_confirmed", () => {
+    hideRespawnPanel();
+    addMessage("✅ You have respawned at a new location.");
+  });
+
+  socket.on("respawn_not_ready", (data) => {
+    if (data.message) {
+      addMessage(data.message);
+    }
   });
 
   socket.on("sonar_result", (data) => {
@@ -110,9 +154,27 @@ joinBtn.addEventListener("click", () => {
   socket.emit("join_game", { username: name });
 });
 
-headingSlider.addEventListener("input", () => {
-  headingLabel.textContent = `Heading: ${headingSlider.value}°`;
-  sendControls();
+headingDial.addEventListener("pointerdown", (event) => {
+  headingDialActive = true;
+  headingDial.setPointerCapture(event.pointerId);
+  updateHeadingFromPointer(event);
+});
+
+headingDial.addEventListener("pointermove", (event) => {
+  if (!headingDialActive) return;
+  updateHeadingFromPointer(event);
+});
+
+headingDial.addEventListener("pointerup", (event) => {
+  if (!headingDialActive) return;
+  headingDialActive = false;
+  headingDial.releasePointerCapture(event.pointerId);
+});
+
+headingDial.addEventListener("pointerleave", (event) => {
+  if (!headingDialActive) return;
+  headingDialActive = false;
+  headingDial.releasePointerCapture(event.pointerId);
 });
 
 speedSlider.addEventListener("input", () => {
@@ -133,13 +195,116 @@ fireBtn.addEventListener("click", () => {
   socket.emit("fire_torpedo");
 });
 
+respawnBtn.addEventListener("click", () => {
+  if (!socket || respawnBtn.disabled) return;
+  respawnBtn.disabled = true;
+  socket.emit("request_respawn");
+});
+
 function sendControls() {
   if (!socket) return;
   socket.emit("update_controls", {
-    heading: parseFloat(headingSlider.value),
+    heading: currentHeading,
     speed: parseFloat(speedSlider.value),
     depth: parseFloat(depthSlider.value),
   });
+}
+
+function normalizeHeading(value) {
+  return ((value % 360) + 360) % 360;
+}
+
+function headingToCardinal(angle) {
+  const directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  return directions[Math.round(angle / 45) % 8];
+}
+
+function updateHeadingDisplay(angle) {
+  const normalized = normalizeHeading(angle);
+  headingLabel.textContent = `Heading: ${Math.round(normalized)}° (${headingToCardinal(normalized)})`;
+  headingPointer.style.transform = `rotate(${normalized}deg)`;
+}
+
+function syncHeadingFromServer(angle) {
+  currentHeading = normalizeHeading(angle);
+  updateHeadingDisplay(currentHeading);
+}
+
+function setHeading(angle) {
+  currentHeading = normalizeHeading(angle);
+  updateHeadingDisplay(currentHeading);
+  sendControls();
+}
+
+function updateHeadingFromPointer(event) {
+  const rect = headingDial.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const dx = event.clientX - cx;
+  const dy = event.clientY - cy;
+  const angle = ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
+  setHeading(angle);
+}
+
+function showRespawnPanel(respawnAtSeconds, message, ready = false) {
+  if (message) {
+    respawnMessage.textContent = message;
+  }
+  respawnPanel.classList.remove("hidden");
+  if (respawnCountdownInterval) {
+    clearInterval(respawnCountdownInterval);
+  }
+  if (ready) {
+    respawnAvailableAt = null;
+  } else if (respawnAtSeconds) {
+    respawnAvailableAt = respawnAtSeconds * 1000;
+  } else {
+    respawnAvailableAt = null;
+  }
+  updateRespawnCountdown();
+  respawnCountdownInterval = setInterval(updateRespawnCountdown, 500);
+}
+
+function hideRespawnPanel() {
+  if (respawnCountdownInterval) {
+    clearInterval(respawnCountdownInterval);
+    respawnCountdownInterval = null;
+  }
+  respawnPanel.classList.add("hidden");
+  respawnTimer.textContent = "";
+  respawnAvailableAt = null;
+  respawnBtn.disabled = true;
+}
+
+function handleRespawnState(you) {
+  if (!you) return;
+  if (you.alive) {
+    hideRespawnPanel();
+    if (!headingDialActive && typeof you.heading === "number") {
+      syncHeadingFromServer(you.heading);
+    }
+    return;
+  }
+  const message = respawnMessage.textContent || "You were hit.";
+  showRespawnPanel(you.respawn_at, message, you.respawn_ready);
+}
+
+function updateRespawnCountdown() {
+  if (respawnPanel.classList.contains("hidden")) return;
+  if (respawnAvailableAt === null) {
+    respawnTimer.textContent = "Ready to respawn.";
+    respawnBtn.disabled = false;
+    return;
+  }
+  const remaining = respawnAvailableAt - Date.now();
+  if (remaining <= 0) {
+    respawnAvailableAt = null;
+    respawnTimer.textContent = "Ready to respawn.";
+    respawnBtn.disabled = false;
+  } else {
+    respawnTimer.textContent = `Respawn available in ${Math.ceil(remaining / 1000)}s`;
+    respawnBtn.disabled = true;
+  }
 }
 
 function drawMap() {
@@ -176,7 +341,7 @@ function drawMap() {
     const y = you.y * scale;
     mapCtx.save();
     mapCtx.translate(x, y);
-    mapCtx.rotate((you.heading * Math.PI) / 180);
+    mapCtx.rotate(((you.heading - 90) * Math.PI) / 180);
     mapCtx.fillStyle = "#00ff6a";
     mapCtx.beginPath();
     mapCtx.moveTo(10, 0);
@@ -219,7 +384,7 @@ function drawSonar(now) {
 
   sonarCtx.save();
   sonarCtx.translate(cx, cy);
-  sonarCtx.rotate(sweepAngle);
+  sonarCtx.rotate(sweepAngle - Math.PI / 2);
   const gradient = sonarCtx.createLinearGradient(0, 0, maxRadius, 0);
   gradient.addColorStop(0, "rgba(0,255,0,0.6)");
   gradient.addColorStop(1, "rgba(0,255,0,0.0)");
@@ -235,7 +400,7 @@ function drawSonar(now) {
     const age = now - blip.lastDetectedAt;
     if (age > BLIP_FADE_MS) return;
     let alpha = 1 - age / BLIP_FADE_MS;
-    const blipAngleRad = (blip.bearing * Math.PI) / 180;
+    const blipAngleRad = ((blip.bearing - 90) * Math.PI) / 180;
     const angleDiff = shortestAngleDiff(sweepAngle, blipAngleRad);
     const angleWindow = (10 * Math.PI) / 180;
     if (Math.abs(angleDiff) < angleWindow) {

@@ -52,8 +52,30 @@ def spawn_submarine(username: str, sid: str) -> dict:
         "alive": True,
         "last_sonar_ping": 0.0,
         "respawn_at": None,
+        "respawn_ready": False,
     }
     return sub
+
+
+def respawn_submarine(sub: dict):
+    x, y = random_position()
+    sub.update(
+        {
+            "x": x,
+            "y": y,
+            "depth": 50.0,
+            "heading": random.uniform(0, 359),
+            "speed": 0.0,
+            "alive": True,
+            "respawn_at": None,
+            "respawn_ready": False,
+        }
+    )
+    socketio.emit(
+        "respawn_confirmed",
+        {"message": "You are back in the fight.", "x": x, "y": y},
+        room=sub["id"],
+    )
 
 
 def wrap_position(value: float) -> float:
@@ -73,29 +95,25 @@ def update_submarine(sub: dict, dt: float, now: float):
     if sub["alive"]:
         speed = clamp(sub["speed"], 0.0, SUB_MAX_SPEED)
         heading_rad = math.radians(sub["heading"])
-        dx = math.cos(heading_rad) * speed
-        dy = math.sin(heading_rad) * speed
+        dx = math.sin(heading_rad) * speed
+        dy = -math.cos(heading_rad) * speed
         sub["x"] = wrap_position(sub["x"] + dx)
         sub["y"] = wrap_position(sub["y"] + dy)
         sub["depth"] = clamp(sub["depth"], 0.0, MAX_DEPTH)
     else:
-        if sub["respawn_at"] and now >= sub["respawn_at"]:
-            x, y = random_position()
-            sub.update({
-                "x": x,
-                "y": y,
-                "depth": 50.0,
-                "heading": random.uniform(0, 359),
-                "speed": 0.0,
-                "alive": True,
-                "respawn_at": None,
-            })
+        if sub["respawn_at"] and now >= sub["respawn_at"] and not sub["respawn_ready"]:
+            sub["respawn_ready"] = True
+            socketio.emit(
+                "respawn_ready",
+                {"message": "You may respawn when ready."},
+                room=sub["id"],
+            )
 
 
 def update_torpedo(torp: dict):
     heading_rad = math.radians(torp["heading"])
-    torp["x"] = wrap_position(torp["x"] + math.cos(heading_rad) * TORPEDO_SPEED)
-    torp["y"] = wrap_position(torp["y"] + math.sin(heading_rad) * TORPEDO_SPEED)
+    torp["x"] = wrap_position(torp["x"] + math.sin(heading_rad) * TORPEDO_SPEED)
+    torp["y"] = wrap_position(torp["y"] - math.cos(heading_rad) * TORPEDO_SPEED)
 
 
 def handle_torpedo_hits(now: float):
@@ -117,14 +135,33 @@ def handle_torpedo_hits(now: float):
             if dist <= HIT_RADIUS:
                 sub["alive"] = False
                 sub["respawn_at"] = now + RESPAWN_TIME
-                emit(
+                sub["respawn_ready"] = False
+                attacker = submarines.get(torp["owner"])
+                attacker_name = attacker["username"] if attacker else "Another captain"
+                socketio.emit(
                     "sub_hit",
                     {
                         "victim_id": sub["id"],
                         "victim_username": sub["username"],
-                        "by_owner": torp["owner"],
+                        "attacker_username": attacker_name,
                     },
                     broadcast=True,
+                )
+                socketio.emit(
+                    "hit_confirmed",
+                    {
+                        "victim_id": sub["id"],
+                        "victim_username": sub["username"],
+                    },
+                    room=torp["owner"],
+                )
+                socketio.emit(
+                    "you_were_hit",
+                    {
+                        "by_username": attacker_name,
+                        "respawn_available_at": sub["respawn_at"],
+                    },
+                    room=sub["id"],
                 )
                 hit = True
                 break
@@ -177,6 +214,7 @@ def build_state_for(sub: dict, now: float):
             "username": sub["username"],
             "alive": False,
             "respawn_at": sub["respawn_at"],
+            "respawn_ready": sub["respawn_ready"],
         }
 
     state = {
@@ -287,7 +325,7 @@ def on_sonar_ping():
         dz = other["depth"] - sub["depth"]
         dist = math.sqrt(dx * dx + dy * dy + dz * dz)
         if dist <= SONAR_RANGE:
-            bearing = (math.degrees(math.atan2(dy, dx)) + 360.0) % 360.0
+            bearing = (math.degrees(math.atan2(dx, -dy)) + 360.0) % 360.0
             contacts.append(
                 {
                     "id": other["id"],
@@ -329,6 +367,28 @@ def on_fire_torpedo():
     }
     torpedoes.append(torpedo)
     emit("torpedo_fired", {"id": torpedo["id"]})
+
+
+@socketio.on("request_respawn")
+def on_request_respawn():
+    sid = request.sid
+    sub = submarines.get(sid)
+    if not sub or sub["alive"]:
+        return
+    now = time.time()
+    if not sub["respawn_at"] or now < sub["respawn_at"]:
+        emit(
+            "respawn_not_ready",
+            {"message": "Hold tight, the crew is still preparing a new sub."},
+        )
+        return
+    respawn_submarine(sub)
+    emit(
+        "system_message",
+        {"message": f"{sub['username']} has re-entered the hunt."},
+        broadcast=True,
+        include_self=False,
+    )
 
 
 # -----------------------------------------------------------------------------
