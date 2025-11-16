@@ -145,7 +145,6 @@ def handle_torpedo_hits(now: float):
                         "victim_username": sub["username"],
                         "attacker_username": attacker_name,
                     },
-                    broadcast=True,
                 )
                 socketio.emit(
                     "hit_confirmed",
@@ -274,10 +273,10 @@ def on_disconnect():
     sid = request.sid
     sub = submarines.pop(sid, None)
     if sub:
-        emit(
+        socketio.emit(
             "system_message",
             {"message": f"{sub['username']} has left the hunt."},
-            broadcast=True,
+            skip_sid=sid,
         )
 
 
@@ -288,11 +287,10 @@ def on_join_game(data):
     sub = spawn_submarine(username, sid)
     submarines[sid] = sub
     emit("joined", {"id": sid, "username": username})
-    emit(
+    socketio.emit(
         "system_message",
         {"message": f"{username} has joined the hunt."},
-        broadcast=True,
-        include_self=False,
+        skip_sid=sid,
     )
 
 
@@ -383,11 +381,10 @@ def on_request_respawn():
         )
         return
     respawn_submarine(sub)
-    emit(
+    socketio.emit(
         "system_message",
         {"message": f"{sub['username']} has re-entered the hunt."},
-        broadcast=True,
-        include_self=False,
+        skip_sid=sid,
     )
 
 
