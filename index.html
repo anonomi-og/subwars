@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Submarine Control</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="layout">
+    <header>
+      <h1>Sub Control Console</h1>
+      <p class="subtitle">Set targets, monitor live telemetry, and manage torpedo tubes.</p>
+    </header>
+
+    <section class="panel heading-panel">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Heading</p>
+          <h2>Compass Control</h2>
+        </div>
+        <div class="desired-readout">
+          <span>Desired:</span>
+          <strong id="desiredHeadingLabel">0°</strong>
+        </div>
+      </div>
+      <div class="compass-wrapper">
+        <div class="compass">
+          <div class="compass-ring">
+            <div class="tick-marks">
+              <!-- Tick marks generated with CSS background -->
+            </div>
+            <div class="desired-needle" id="desiredNeedle"></div>
+            <div class="actual-needle" id="actualNeedle"></div>
+          </div>
+          <div class="compass-center">
+            <p class="eyebrow">Actual</p>
+            <div class="heading-value" id="actualHeadingLabel">0°</div>
+          </div>
+        </div>
+        <div class="heading-controls">
+          <label for="headingInput">Desired Heading</label>
+          <input type="range" id="headingInput" min="0" max="359" value="0">
+          <div class="input-value" id="headingInputValue">0°</div>
+          <p class="help-text">Outer band shows desired heading, inner needle tracks current heading.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel telemetry-panel">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Telemetry</p>
+          <h2>Live Vitals</h2>
+        </div>
+      </div>
+      <div class="telemetry-grid">
+        <div class="metric">
+          <p class="label">Depth</p>
+          <p class="value" id="depthValue">0 m</p>
+        </div>
+        <div class="metric">
+          <p class="label">Speed</p>
+          <p class="value" id="speedValue">0 kts</p>
+        </div>
+        <div class="metric">
+          <p class="label">Heading</p>
+          <p class="value" id="telemetryHeadingValue">0°</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel map-panel">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Map</p>
+          <h2>Situational Map</h2>
+        </div>
+        <div class="map-stats">
+          <span>Course</span>
+          <strong id="mapHeadingLabel">0°</strong>
+        </div>
+      </div>
+      <div class="map-display">
+        <div class="grid"></div>
+        <div class="submarine" id="submarine">
+          <div class="hull"></div>
+          <div class="sail"></div>
+          <div class="tail"></div>
+          <div class="propeller"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel torpedo-panel">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Weapons</p>
+          <h2>Torpedo Tubes</h2>
+        </div>
+        <p class="help-text">Load tubes (5s each) before firing. Buttons light up when tubes are ready.</p>
+      </div>
+      <div class="tube-grid" id="tubeGrid"></div>
+    </section>
+  </div>
+  <script src="script.js"></script>
+</body>
+</html>
