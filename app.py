@@ -12,11 +12,21 @@ from flask_socketio import SocketIO, emit
 WORLD_SIZE = 2000.0
 MAX_DEPTH = 300.0
 TICK_RATE = 5  # updates per second
-TORPEDO_SPEED = 6.0
-SUB_MAX_SPEED = 4.0
+TORPEDO_SPEED = 30.0  # world units per second
+SUB_MAX_SPEED = 20.0  # world units per second
 SONAR_RANGE = 500.0
-HIT_RADIUS = 30.0
+HIT_RADIUS = 12.0  # cylindrical radius of the submarine hull
 RESPAWN_TIME = 10.0
+
+# Movement modelling
+MAX_TURN_RATE = 25.0  # degrees per second
+MAX_ACCELERATION = 20.0  # speed change per second
+BASE_DIVE_RATE = 8.0  # meters per second when stopped
+DIVE_RATE_PER_SPEED = 0.15  # extra dive rate per unit of speed
+
+# Hull modelling (used for collisions)
+SUB_LENGTH = 55.0  # meters
+SPEED_ORDER_MAX = 4.0
 
 # -----------------------------------------------------------------------------
 # Flask + Socket.IO setup
@@ -49,6 +59,9 @@ def spawn_submarine(username: str, sid: str) -> dict:
         "depth": 50.0,
         "heading": random.uniform(0, 359),
         "speed": 0.0,
+        "target_heading": None,
+        "target_speed": 0.0,
+        "target_depth": 50.0,
         "alive": True,
         "last_sonar_ping": 0.0,
         "respawn_at": None,
@@ -66,6 +79,9 @@ def respawn_submarine(sub: dict):
             "depth": 50.0,
             "heading": random.uniform(0, 359),
             "speed": 0.0,
+            "target_heading": None,
+            "target_speed": 0.0,
+            "target_depth": 50.0,
             "alive": True,
             "respawn_at": None,
             "respawn_ready": False,
@@ -90,16 +106,55 @@ def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
 
+def angular_difference(target: float, current: float) -> float:
+    diff = (target - current + 180.0) % 360.0 - 180.0
+    return diff
+
+
+def move_towards(current: float, target: float, max_delta: float) -> float:
+    if current < target:
+        return min(target, current + max_delta)
+    return max(target, current - max_delta)
+
+
+def interpret_speed_command(command: float) -> float:
+    command = float(command)
+    if command <= SPEED_ORDER_MAX:
+        fraction = command / SPEED_ORDER_MAX
+        return clamp(fraction * SUB_MAX_SPEED, 0.0, SUB_MAX_SPEED)
+    return clamp(command, 0.0, SUB_MAX_SPEED)
+
+
 # -----------------------------------------------------------------------------
 def update_submarine(sub: dict, dt: float, now: float):
     if sub["alive"]:
+        # Heading inertia
+        target_heading = sub.get("target_heading")
+        if target_heading is None:
+            target_heading = sub["heading"]
+        turn_amount = clamp(MAX_TURN_RATE * dt, 0.0, 360.0)
+        diff = angular_difference(target_heading, sub["heading"])
+        if abs(diff) < turn_amount:
+            sub["heading"] = target_heading % 360.0
+        else:
+            sub["heading"] = (sub["heading"] + math.copysign(turn_amount, diff)) % 360.0
+
+        # Speed inertia
+        target_speed = clamp(sub.get("target_speed", sub["speed"]), 0.0, SUB_MAX_SPEED)
+        sub["speed"] = move_towards(sub["speed"], target_speed, MAX_ACCELERATION * dt)
+
+        # Depth change depends on speed (subs dive slower when stopped)
+        target_depth = clamp(sub.get("target_depth", sub["depth"]), 0.0, MAX_DEPTH)
+        dive_rate = BASE_DIVE_RATE + sub["speed"] * DIVE_RATE_PER_SPEED
+        sub["depth"] = move_towards(sub["depth"], target_depth, dive_rate * dt)
+        sub["depth"] = clamp(sub["depth"], 0.0, MAX_DEPTH)
+
         speed = clamp(sub["speed"], 0.0, SUB_MAX_SPEED)
         heading_rad = math.radians(sub["heading"])
-        dx = math.sin(heading_rad) * speed
-        dy = -math.cos(heading_rad) * speed
+        dx = math.sin(heading_rad) * speed * dt
+        dy = -math.cos(heading_rad) * speed * dt
         sub["x"] = wrap_position(sub["x"] + dx)
         sub["y"] = wrap_position(sub["y"] + dy)
-        sub["depth"] = clamp(sub["depth"], 0.0, MAX_DEPTH)
     else:
         if sub["respawn_at"] and now >= sub["respawn_at"] and not sub["respawn_ready"]:
             sub["respawn_ready"] = True
@@ -110,10 +165,14 @@ def update_submarine(sub: dict, dt: float, now: float):
             )
 
 
-def update_torpedo(torp: dict):
+def update_torpedo(torp: dict, dt: float):
     heading_rad = math.radians(torp["heading"])
-    torp["x"] = wrap_position(torp["x"] + math.sin(heading_rad) * TORPEDO_SPEED)
-    torp["y"] = wrap_position(torp["y"] - math.cos(heading_rad) * TORPEDO_SPEED)
+    torp["x"] = wrap_position(
+        torp["x"] + math.sin(heading_rad) * TORPEDO_SPEED * dt
+    )
+    torp["y"] = wrap_position(
+        torp["y"] - math.cos(heading_rad) * TORPEDO_SPEED * dt
+    )
 
 
 def handle_torpedo_hits(now: float):
@@ -128,11 +187,7 @@ def handle_torpedo_hits(now: float):
                 continue
             if sub["id"] == torp["owner"]:
                 continue
-            dx = torp["x"] - sub["x"]
-            dy = torp["y"] - sub["y"]
-            dz = torp["depth"] - sub["depth"]
-            dist = math.sqrt(dx * dx + dy * dy + dz * dz)
-            if dist <= HIT_RADIUS:
+            if torpedo_hits_sub(torp, sub):
                 sub["alive"] = False
                 sub["respawn_at"] = now + RESPAWN_TIME
                 sub["respawn_ready"] = False
@@ -167,6 +222,28 @@ def handle_torpedo_hits(now: float):
         if not hit:
             surviving_torps.append(torp)
     torpedoes = surviving_torps
+
+
+def torpedo_hits_sub(torp: dict, sub: dict) -> bool:
+    # Represent the submarine as a horizontal capsule to account for length/orientation
+    heading_rad = math.radians(sub["heading"])
+    dir_x = math.sin(heading_rad)
+    dir_y = -math.cos(heading_rad)
+    half_length = SUB_LENGTH / 2.0
+
+    rel_x = torp["x"] - sub["x"]
+    rel_y = torp["y"] - sub["y"]
+    along = rel_x * dir_x + rel_y * dir_y
+    along_clamped = clamp(along, -half_length, half_length)
+    closest_x = sub["x"] + dir_x * along_clamped
+    closest_y = sub["y"] + dir_y * along_clamped
+
+    cross_x = torp["x"] - closest_x
+    cross_y = torp["y"] - closest_y
+    horizontal_dist = math.sqrt(cross_x * cross_x + cross_y * cross_y)
+    dz = torp["depth"] - sub["depth"]
+    distance = math.sqrt(horizontal_dist * horizontal_dist + dz * dz)
+    return distance <= HIT_RADIUS
 
 
 def visible_contacts(sub: dict, now: float):
@@ -226,6 +303,7 @@ def build_state_for(sub: dict, now: float):
         "world_size": WORLD_SIZE,
         "max_depth": MAX_DEPTH,
         "sonar_range": SONAR_RANGE,
+        "sub_max_speed": SUB_MAX_SPEED,
     }
     return state
 
@@ -241,7 +319,7 @@ def game_loop():
             update_submarine(sub, dt, now)
 
         for torp in torpedoes:
-            update_torpedo(torp)
+            update_torpedo(torp, dt)
 
         handle_torpedo_hits(now)
 
@@ -300,9 +378,12 @@ def on_update_controls(data):
     sub = submarines.get(sid)
     if not sub or not sub["alive"]:
         return
-    sub["heading"] = float(data.get("heading", sub["heading"])) % 360.0
-    sub["speed"] = clamp(float(data.get("speed", sub["speed"])), 0.0, SUB_MAX_SPEED)
-    sub["depth"] = clamp(float(data.get("depth", sub["depth"])), 0.0, MAX_DEPTH)
+    sub["target_heading"] = float(data.get("heading", sub.get("target_heading", sub["heading"]))) % 360.0
+    speed_command = data.get("speed", sub.get("target_speed", sub["speed"]))
+    sub["target_speed"] = interpret_speed_command(speed_command)
+    sub["target_depth"] = clamp(
+        float(data.get("depth", sub.get("target_depth", sub["depth"]))), 0.0, MAX_DEPTH
+    )
 
 
 @socketio.on("sonar_ping")

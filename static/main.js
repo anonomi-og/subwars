@@ -8,6 +8,8 @@ let lastFrameTime = performance.now();
 const SWEEP_SPEED = 0.8;
 const BLIP_FADE_MS = 1500;
 let SONAR_RANGE_CLIENT = 500;
+let SUB_MAX_SPEED_CLIENT = 20;
+const DEPTH_ARROW_TOLERANCE = 1;
 
 // DOM references
 const loginOverlay = document.getElementById("login-overlay");
@@ -50,6 +52,7 @@ const SPEED_ORDERS = [
   { label: "Full Ahead", value: 4 },
 ];
 const speedOrderButtons = [];
+const MAX_SPEED_ORDER_VALUE = SPEED_ORDERS[SPEED_ORDERS.length - 1].value;
 
 updateHeadingDisplay(currentHeading);
 initializeSpeedTelegraph();
@@ -75,6 +78,9 @@ function connectSocket() {
     }
     if (data.sonar_range) {
       SONAR_RANGE_CLIENT = data.sonar_range;
+    }
+    if (typeof data.sub_max_speed === "number") {
+      SUB_MAX_SPEED_CLIENT = data.sub_max_speed;
     }
     handleRespawnState(data.you);
   });
@@ -210,9 +216,23 @@ function sendControls() {
   if (!socket) return;
   socket.emit("update_controls", {
     heading: currentHeading,
-    speed: currentSpeedOrder,
+    speed: speedOrderToActual(currentSpeedOrder),
     depth: parseFloat(depthSlider.value),
   });
+}
+
+function speedOrderToActual(orderValue) {
+  if (!SUB_MAX_SPEED_CLIENT) return 0;
+  const clamped = Math.max(0, Math.min(orderValue, MAX_SPEED_ORDER_VALUE));
+  const ratio = clamped / MAX_SPEED_ORDER_VALUE;
+  return ratio * SUB_MAX_SPEED_CLIENT;
+}
+
+function actualSpeedToOrder(actualSpeed) {
+  if (!SUB_MAX_SPEED_CLIENT) return 0;
+  const clamped = Math.max(0, Math.min(actualSpeed, SUB_MAX_SPEED_CLIENT));
+  const ratio = clamped / SUB_MAX_SPEED_CLIENT;
+  return ratio * MAX_SPEED_ORDER_VALUE;
 }
 
 function normalizeHeading(value) {
@@ -321,7 +341,8 @@ function setSpeedOrder(value) {
 }
 
 function syncSpeedFromServer(value) {
-  const order = findClosestSpeedOrder(value);
+  const approxOrder = actualSpeedToOrder(value);
+  const order = findClosestSpeedOrder(approxOrder);
   currentSpeedOrder = order.value;
   updateSpeedDisplay(order.value);
 }
@@ -337,10 +358,11 @@ function findClosestSpeedOrder(value) {
 
 function updateSpeedDisplay(value) {
   const order = findClosestSpeedOrder(value);
+  const actualSpeed = speedOrderToActual(order.value);
   speedLabel.textContent =
     order.value === 0
       ? `Speed: ${order.label}`
-      : `Speed: ${order.label} (${order.value.toFixed(0)} kn)`;
+      : `Speed: ${order.label} (${actualSpeed.toFixed(0)} kn)`;
   speedOrderButtons.forEach((btn) => {
     const btnValue = parseFloat(btn.dataset.speedValue);
     btn.classList.toggle("active", btnValue === order.value);
@@ -454,6 +476,7 @@ function drawSonar(now) {
   sonarCtx.stroke();
   sonarCtx.restore();
 
+  const playerDepth = latestState?.you?.depth ?? null;
   sonarBlips.forEach((blip) => {
     const age = now - blip.lastDetectedAt;
     if (age > BLIP_FADE_MS) return;
@@ -471,7 +494,32 @@ function drawSonar(now) {
     sonarCtx.beginPath();
     sonarCtx.arc(x, y, 4, 0, Math.PI * 2);
     sonarCtx.fill();
+
+    if (typeof playerDepth === "number" && typeof blip.depth === "number") {
+      const depthDiff = blip.depth - playerDepth;
+      if (depthDiff < -DEPTH_ARROW_TOLERANCE) {
+        drawDepthArrow(sonarCtx, x, y, -1, alpha);
+      } else if (depthDiff > DEPTH_ARROW_TOLERANCE) {
+        drawDepthArrow(sonarCtx, x, y, 1, alpha);
+      }
+    }
   });
+}
+
+function drawDepthArrow(ctx, x, y, direction, alpha) {
+  ctx.fillStyle = `rgba(255,255,255,${Math.max(0, Math.min(1, alpha + 0.2))})`;
+  ctx.beginPath();
+  if (direction < 0) {
+    ctx.moveTo(x, y - 10);
+    ctx.lineTo(x - 4, y - 2);
+    ctx.lineTo(x + 4, y - 2);
+  } else {
+    ctx.moveTo(x, y + 10);
+    ctx.lineTo(x - 4, y + 2);
+    ctx.lineTo(x + 4, y + 2);
+  }
+  ctx.closePath();
+  ctx.fill();
 }
 
 function shortestAngleDiff(a, b) {
