@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>U-Boat Hunt MVP</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  </head>
+  <body>
+    <div id="login-overlay" class="overlay">
+      <div class="login-box">
+        <h1>U-Boat Hunt</h1>
+        <label for="username-input">Captain name</label>
+        <input id="username-input" type="text" placeholder="Captain" />
+        <button id="join-btn">Join Game</button>
+      </div>
+    </div>
+
+    <div id="main-ui" class="hidden">
+      <header class="top-bar">
+        <div id="status-text">Disconnected</div>
+        <div id="system-messages" class="system-messages"></div>
+      </header>
+
+      <main class="content">
+        <section class="panel">
+          <h2>Map</h2>
+          <canvas id="map-canvas" width="400" height="400"></canvas>
+        </section>
+
+        <section class="panel">
+          <h2>Sonar</h2>
+          <canvas id="sonar-canvas" width="300" height="300"></canvas>
+          <div id="sonar-list" class="sonar-list">No contacts.</div>
+          <button id="ping-btn">Ping Sonar</button>
+        </section>
+
+        <section class="panel controls-panel">
+          <h2>Controls</h2>
+          <div class="control">
+            <label id="heading-label" for="heading-slider">Heading: 0°</label>
+            <input type="range" id="heading-slider" min="0" max="359" />
+          </div>
+          <div class="control">
+            <label id="speed-label" for="speed-slider">Speed: 0 kn</label>
+            <input type="range" id="speed-slider" min="0" max="4" step="0.5" />
+          </div>
+          <div class="control">
+            <label id="depth-label" for="depth-slider">Depth: 0 m</label>
+            <input type="range" id="depth-slider" min="0" max="300" step="10" />
+          </div>
+          <div class="control">
+            <button id="fire-btn">Fire Torpedo</button>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/main.js"></script>
+  </body>
+</html>
