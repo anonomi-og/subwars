@@ -8,6 +8,7 @@ let lastFrameTime = performance.now();
 const SWEEP_SPEED = 0.8;
 const BLIP_FADE_MS = 1500;
 let SONAR_RANGE_CLIENT = 500;
+let PASSIVE_SONAR_RANGE_CLIENT = 750;
 let SUB_MAX_SPEED_CLIENT = 20;
 const DEPTH_ARROW_TOLERANCE = 1;
 
@@ -23,12 +24,21 @@ const pingBtn = document.getElementById("ping-btn");
 const fireBtn = document.getElementById("fire-btn");
 
 const depthSlider = document.getElementById("depth-slider");
-const headingLabel = document.getElementById("heading-label");
+// Old labels removed/replaced by actuals panel
 const speedLabel = document.getElementById("speed-label");
 const depthLabel = document.getElementById("depth-label");
 const speedTelegraph = document.getElementById("speed-telegraph");
+
+// New Heading Dial Elements
 const headingDial = document.getElementById("heading-dial");
-const headingPointer = document.getElementById("heading-pointer");
+const headingRing = document.getElementById("heading-ring");
+const headingInner = document.getElementById("heading-inner");
+
+// New Actuals Panel Elements
+const actualHeadingEl = document.getElementById("actual-heading");
+const actualSpeedEl = document.getElementById("actual-speed");
+const actualDepthEl = document.getElementById("actual-depth");
+
 const respawnPanel = document.getElementById("respawn-panel");
 const respawnMessage = document.getElementById("respawn-message");
 const respawnTimer = document.getElementById("respawn-timer");
@@ -39,7 +49,8 @@ const mapCtx = mapCanvas.getContext("2d");
 const sonarCanvas = document.getElementById("sonar-canvas");
 const sonarCtx = sonarCanvas.getContext("2d");
 
-let currentHeading = 0;
+let currentHeadingOrder = 0; // The commanded heading (outer ring)
+let currentHeadingActual = 0; // The actual heading (inner dial)
 let currentSpeedOrder = 0;
 let headingDialActive = false;
 let respawnAvailableAt = null;
@@ -50,11 +61,15 @@ const SPEED_ORDERS = [
   { label: "1/2 Ahead", value: 2 },
   { label: "3/4 Ahead", value: 3 },
   { label: "Full Ahead", value: 4 },
+  { label: "Rev", value: -1 }, // Added reverse just in case, though not in UI yet
 ];
-const speedOrderButtons = [];
-const MAX_SPEED_ORDER_VALUE = SPEED_ORDERS[SPEED_ORDERS.length - 1].value;
+// Filter to just positive for telegraph for now
+const UI_SPEED_ORDERS = SPEED_ORDERS.filter(o => o.value >= 0);
 
-updateHeadingDisplay(currentHeading);
+const speedOrderButtons = [];
+const MAX_SPEED_ORDER_VALUE = UI_SPEED_ORDERS[UI_SPEED_ORDERS.length - 1].value;
+
+updateHeadingRing(currentHeadingOrder);
 initializeSpeedTelegraph();
 
 function connectSocket() {
@@ -79,9 +94,23 @@ function connectSocket() {
     if (data.sonar_range) {
       SONAR_RANGE_CLIENT = data.sonar_range;
     }
+    if (data.passive_sonar_range) {
+      PASSIVE_SONAR_RANGE_CLIENT = data.passive_sonar_range;
+    }
     if (typeof data.sub_max_speed === "number") {
       SUB_MAX_SPEED_CLIENT = data.sub_max_speed;
     }
+
+    // Update Actuals
+    if (data.you && data.you.alive) {
+      updateActualsDisplay(data.you);
+      // Sync inner dial to actual heading
+      if (typeof data.you.heading === "number") {
+        currentHeadingActual = data.you.heading;
+        updateHeadingInner(currentHeadingActual);
+      }
+    }
+
     handleRespawnState(data.you);
   });
 
@@ -170,6 +199,7 @@ joinBtn.addEventListener("click", () => {
   socket.emit("join_game", { username: name });
 });
 
+// Heading Dial Interaction (Outer Ring)
 headingDial.addEventListener("pointerdown", (event) => {
   headingDialActive = true;
   headingDial.setPointerCapture(event.pointerId);
@@ -194,7 +224,7 @@ headingDial.addEventListener("pointerleave", (event) => {
 });
 
 depthSlider.addEventListener("input", () => {
-  depthLabel.textContent = `Depth: ${depthSlider.value} m`;
+  // depthLabel.textContent = `Depth: ${depthSlider.value} m`; // Removed old label update
   sendControls();
 });
 
@@ -215,7 +245,7 @@ respawnBtn.addEventListener("click", () => {
 function sendControls() {
   if (!socket) return;
   socket.emit("update_controls", {
-    heading: currentHeading,
+    heading: currentHeadingOrder,
     speed: speedOrderToActual(currentSpeedOrder),
     depth: parseFloat(depthSlider.value),
   });
@@ -244,20 +274,50 @@ function headingToCardinal(angle) {
   return directions[Math.round(angle / 45) % 8];
 }
 
-function updateHeadingDisplay(angle) {
+// Update the Outer Ring (Commanded Heading)
+function updateHeadingRing(angle) {
   const normalized = normalizeHeading(angle);
-  headingLabel.textContent = `Heading: ${Math.round(normalized)}° (${headingToCardinal(normalized)})`;
-  headingPointer.style.transform = `rotate(${normalized}deg)`;
+  // Rotate the ring so the marker points to the desired heading relative to "North" (Up)
+  // If North is Up (0 deg), and we want to head East (90 deg), we rotate the ring -90 deg?
+  // Or do we rotate the ring such that "East" is at the top?
+  // Let's assume "North Up" display. The ring rotates.
+  // If I want to go East (90), I turn the ring so 'E' is at the top? No, that's heading indicator.
+  // If it's a "Set Heading" dial, usually you rotate a bug/marker to the heading.
+  // My CSS has a marker at the top of the ring.
+  // So if I rotate the ring, the marker rotates with it.
+  // If I want heading 90, I rotate the ring 90 degrees clockwise.
+  headingRing.style.transform = `rotate(${normalized}deg)`;
 }
 
-function syncHeadingFromServer(angle) {
-  currentHeading = normalizeHeading(angle);
-  updateHeadingDisplay(currentHeading);
+// Update the Inner Dial (Actual Heading)
+function updateHeadingInner(angle) {
+  const normalized = normalizeHeading(angle);
+  // If the inner dial is a compass, it should rotate opposite to heading to keep North pointing North?
+  // Or if it's a directional gyro, it shows the heading.
+  // Let's make it show the heading by rotating it.
+  // If heading is 90 (East), the needle should point East?
+  // The CSS has a needle pointing UP.
+  // So if we rotate the inner div 90 deg, the needle points Right (East).
+  headingInner.style.transform = `rotate(${normalized}deg)`;
 }
 
-function setHeading(angle) {
-  currentHeading = normalizeHeading(angle);
-  updateHeadingDisplay(currentHeading);
+function updateActualsDisplay(you) {
+  if (typeof you.heading === "number") {
+    actualHeadingEl.textContent = Math.round(you.heading).toString().padStart(3, '0');
+  }
+  if (typeof you.speed === "number") {
+    // Convert m/s to knots or just display raw? Game uses arbitrary units.
+    // Let's assume 1 unit = 1 knot for simplicity or just show the value.
+    actualSpeedEl.textContent = Math.round(you.speed).toString().padStart(2, '0');
+  }
+  if (typeof you.depth === "number") {
+    actualDepthEl.textContent = Math.round(you.depth).toString().padStart(3, '0');
+  }
+}
+
+function setHeadingOrder(angle) {
+  currentHeadingOrder = normalizeHeading(angle);
+  updateHeadingRing(currentHeadingOrder);
   sendControls();
 }
 
@@ -268,7 +328,7 @@ function updateHeadingFromPointer(event) {
   const dx = event.clientX - cx;
   const dy = event.clientY - cy;
   const angle = ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
-  setHeading(angle);
+  setHeadingOrder(angle);
 }
 
 function showRespawnPanel(respawnAtSeconds, message, ready = false) {
@@ -305,9 +365,9 @@ function handleRespawnState(you) {
   if (!you) return;
   if (you.alive) {
     hideRespawnPanel();
-    if (!headingDialActive && typeof you.heading === "number") {
-      syncHeadingFromServer(you.heading);
-    }
+    // We don't sync commanded heading from server for now, to avoid fighting user input
+    // But we could if we wanted to restore state on reconnect.
+    // For now, let's just sync speed order if it matches.
     if (typeof you.speed === "number") {
       syncSpeedFromServer(you.speed);
     }
@@ -318,7 +378,7 @@ function handleRespawnState(you) {
 }
 
 function initializeSpeedTelegraph() {
-  SPEED_ORDERS.forEach((order) => {
+  UI_SPEED_ORDERS.forEach((order) => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "telegraph-order";
@@ -349,7 +409,7 @@ function syncSpeedFromServer(value) {
 
 function findClosestSpeedOrder(value) {
   const target = typeof value === "number" ? value : 0;
-  return SPEED_ORDERS.reduce((closest, order) => {
+  return UI_SPEED_ORDERS.reduce((closest, order) => {
     const diff = Math.abs(order.value - target);
     const bestDiff = Math.abs(closest.value - target);
     return diff < bestDiff ? order : closest;
@@ -358,11 +418,8 @@ function findClosestSpeedOrder(value) {
 
 function updateSpeedDisplay(value) {
   const order = findClosestSpeedOrder(value);
-  const actualSpeed = speedOrderToActual(order.value);
-  speedLabel.textContent =
-    order.value === 0
-      ? `Speed: ${order.label}`
-      : `Speed: ${order.label} (${actualSpeed.toFixed(0)} kn)`;
+  // const actualSpeed = speedOrderToActual(order.value); // Not used in label anymore
+  // speedLabel.textContent = ... // Removed
   speedOrderButtons.forEach((btn) => {
     const btnValue = parseFloat(btn.dataset.speedValue);
     btn.classList.toggle("active", btnValue === order.value);
@@ -415,6 +472,17 @@ function drawMap() {
     });
   }
 
+  if (latestState.passive_contacts) {
+    mapCtx.fillStyle = "rgba(255, 0, 0, 0.3)"; // Faint red for passive
+    latestState.passive_contacts.forEach((contact) => {
+      const x = contact.x * scale;
+      const y = contact.y * scale;
+      mapCtx.beginPath();
+      mapCtx.arc(x, y, 4, 0, Math.PI * 2);
+      mapCtx.fill();
+    });
+  }
+
   if (latestState.you && latestState.you.alive) {
     const you = latestState.you;
     const x = you.x * scale;
@@ -422,13 +490,29 @@ function drawMap() {
     mapCtx.save();
     mapCtx.translate(x, y);
     mapCtx.rotate(((you.heading - 90) * Math.PI) / 180);
+
+    // Draw Submarine Shape
     mapCtx.fillStyle = "#00ff6a";
+
+    // Body (Ellipse)
     mapCtx.beginPath();
-    mapCtx.moveTo(10, 0);
-    mapCtx.lineTo(-10, -6);
-    mapCtx.lineTo(-10, 6);
-    mapCtx.closePath();
+    mapCtx.ellipse(0, 0, 15, 6, 0, 0, Math.PI * 2);
     mapCtx.fill();
+
+    // Tower (Circle/Rect)
+    mapCtx.fillStyle = "#00cc55";
+    mapCtx.beginPath();
+    mapCtx.arc(4, 0, 4, 0, Math.PI * 2); // Offset slightly forward
+    mapCtx.fill();
+
+    // Periscope/Direction indicator
+    mapCtx.strokeStyle = "#00ff6a";
+    mapCtx.lineWidth = 2;
+    mapCtx.beginPath();
+    mapCtx.moveTo(0, 0);
+    mapCtx.lineTo(20, 0); // Line pointing forward
+    mapCtx.stroke();
+
     mapCtx.restore();
   }
 }
@@ -504,6 +588,52 @@ function drawSonar(now) {
       }
     }
   });
+
+  // Draw passive contacts
+  if (latestState && latestState.passive_contacts) {
+    latestState.passive_contacts.forEach((contact) => {
+      const blipAngleRad = ((contact.bearing - 90) * Math.PI) / 180;
+      const r = maxRadius * Math.min(contact.distance / SONAR_RANGE_CLIENT, 1.0); // Scale to active sonar range for display consistency? 
+      // Or should it scale to passive range? 
+      // If passive range > active range, and we scale to active, distant blips will be off screen.
+      // But the sonar screen usually represents a fixed range.
+      // Let's assume the sonar screen shows up to the MAX of both ranges, or just clamp to edge?
+      // Actually, let's scale to SONAR_RANGE_CLIENT for now, so things outside active range are at the edge or off?
+      // Wait, if passive range is 750 and active is 500, we want to see the 750 ones.
+      // So the display radius should probably represent the larger range?
+      // But `drawSonar` rings are just visual.
+      // Let's stick to SONAR_RANGE_CLIENT for the "main" display scale, 
+      // but if passive is further, maybe we should increase the display scale?
+      // For now, let's just clamp them to the edge if they are far, or let them be drawn further out?
+      // The canvas is cleared, so drawing outside maxRadius might be clipped or look weird if it goes over UI.
+      // Let's scale based on PASSIVE_SONAR_RANGE_CLIENT if it's larger, or just stick to SONAR_RANGE_CLIENT and let them be far.
+      // Let's use SONAR_RANGE_CLIENT as the reference for "1.0" radius.
+      // If distance > SONAR_RANGE_CLIENT, it will be > maxRadius.
+      // Let's clamp to maxRadius for now to keep it on screen, or maybe just let it go off?
+      // Better: Draw them where they are relative to the center.
+
+      const x = cx + Math.cos(blipAngleRad) * r;
+      const y = cy + Math.sin(blipAngleRad) * r;
+
+      // Only draw if within canvas bounds (roughly)
+      if (r <= maxRadius + 10) {
+        sonarCtx.fillStyle = `rgba(0, 255, 0, 0.2)`; // Faint green/ghostly
+        sonarCtx.beginPath();
+        sonarCtx.arc(x, y, 4, 0, Math.PI * 2);
+        sonarCtx.fill();
+
+        // Optional: Depth arrow for passive too?
+        if (typeof playerDepth === "number" && typeof contact.depth === "number") {
+          const depthDiff = contact.depth - playerDepth;
+          if (depthDiff < -DEPTH_ARROW_TOLERANCE) {
+            drawDepthArrow(sonarCtx, x, y, -1, 0.3);
+          } else if (depthDiff > DEPTH_ARROW_TOLERANCE) {
+            drawDepthArrow(sonarCtx, x, y, 1, 0.3);
+          }
+        }
+      }
+    });
+  }
 }
 
 function drawDepthArrow(ctx, x, y, direction, alpha) {

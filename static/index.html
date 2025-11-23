@@ -1,73 +1,110 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <title>U-Boat Hunt MVP</title>
-    <link rel="stylesheet" href="/static/styles.css" />
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-  </head>
-  <body>
-    <div id="login-overlay" class="overlay">
-      <div class="login-box">
-        <h1>U-Boat Hunt</h1>
-        <label for="username-input">Captain name</label>
-        <input id="username-input" type="text" placeholder="Captain" />
-        <button id="join-btn">Join Game</button>
-      </div>
+
+<head>
+  <meta charset="UTF-8" />
+  <title>U-Boat Hunt MVP</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+</head>
+
+<body>
+  <div id="login-overlay" class="overlay">
+    <div class="login-box">
+      <h1>U-Boat Hunt</h1>
+      <label for="username-input">Captain name</label>
+      <input id="username-input" type="text" placeholder="Captain" />
+      <button id="join-btn">Join Game</button>
     </div>
+  </div>
 
-    <div id="main-ui" class="hidden">
-      <header class="top-bar">
-        <div id="status-text">Disconnected</div>
-        <div id="system-messages" class="system-messages"></div>
-      </header>
+  <div id="main-ui" class="hidden">
+    <header class="top-bar">
+      <div id="status-text">Disconnected</div>
+      <div id="system-messages" class="system-messages"></div>
+    </header>
 
-      <main class="content">
-        <section class="panel">
-          <h2>Map</h2>
-          <canvas id="map-canvas" width="400" height="400"></canvas>
-        </section>
+    <main class="content">
+      <section class="panel">
+        <h2>Map</h2>
+        <canvas id="map-canvas" width="400" height="400"></canvas>
+      </section>
 
-        <section class="panel">
-          <h2>Sonar</h2>
-          <canvas id="sonar-canvas" width="300" height="300"></canvas>
-          <div id="sonar-list" class="sonar-list">No contacts.</div>
-          <button id="ping-btn">Ping Sonar</button>
-        </section>
+      <section class="panel">
+        <h2>Sonar</h2>
+        <canvas id="sonar-canvas" width="300" height="300"></canvas>
+        <div id="sonar-list" class="sonar-list">No contacts.</div>
+        <button id="ping-btn">Ping Sonar</button>
+      </section>
 
-        <section class="panel controls-panel">
-          <h2>Controls</h2>
-          <div class="control heading-control">
-            <label id="heading-label">Heading: 0° (N)</label>
-            <div id="heading-dial" class="heading-dial">
-              <div class="heading-pointer" id="heading-pointer"></div>
-              <div class="heading-cardinal north">N</div>
-              <div class="heading-cardinal east">E</div>
-              <div class="heading-cardinal south">S</div>
-              <div class="heading-cardinal west">W</div>
+      <section class="panel controls-panel">
+        <h2>Controls</h2>
+
+        <!-- New Actuals Panel -->
+        <div id="actuals-panel" class="actuals-panel">
+          <div class="actual-item">
+            <span class="actual-label">HDG</span>
+            <span id="actual-heading" class="actual-value">000</span>
+          </div>
+          <div class="actual-item">
+            <span class="actual-label">SPD</span>
+            <span id="actual-speed" class="actual-value">00</span>
+          </div>
+          <div class="actual-item">
+            <span class="actual-label">DEP</span>
+            <span id="actual-depth" class="actual-value">000</span>
+          </div>
+        </div>
+
+        <div class="control heading-control">
+          <label id="heading-label">Set Heading</label>
+          <div id="heading-dial" class="heading-dial">
+            <!-- Fixed Cardinals -->
+            <div class="heading-cardinal north">N</div>
+            <div class="heading-cardinal east">E</div>
+            <div class="heading-cardinal south">S</div>
+            <div class="heading-cardinal west">W</div>
+
+            <!-- Outer Ring (Commanded) -->
+            <div id="heading-ring" class="heading-ring">
+              <div class="ring-marker"></div>
+            </div>
+
+            <!-- Inner Dial (Actual) -->
+            <div id="heading-inner" class="heading-inner">
+              <div class="inner-pointer"></div>
+              <div class="inner-compass">
+                <!-- Simple markings for inner compass -->
+                <div class="tick n"></div>
+                <div class="tick e"></div>
+                <div class="tick s"></div>
+                <div class="tick w"></div>
+              </div>
             </div>
           </div>
-          <div class="control speed-control">
-            <label id="speed-label">Speed: All Stop</label>
-            <div id="speed-telegraph" class="speed-telegraph"></div>
-          </div>
-          <div class="control">
-            <label id="depth-label" for="depth-slider">Depth: 0 m</label>
-            <input type="range" id="depth-slider" min="0" max="300" step="10" />
-          </div>
-          <div class="control">
-            <button id="fire-btn">Fire Torpedo</button>
-          </div>
-          <div id="respawn-panel" class="respawn-panel hidden">
-            <h3>Sub Lost</h3>
-            <p id="respawn-message">You were hit!</p>
-            <p id="respawn-timer">Preparing replacement sub...</p>
-            <button id="respawn-btn" disabled>Respawn</button>
-          </div>
-        </section>
-      </main>
-    </div>
+        </div>
+        <div class="control speed-control">
+          <label id="speed-label">Telegraph</label>
+          <div id="speed-telegraph" class="speed-telegraph"></div>
+        </div>
+        <div class="control">
+          <label id="depth-label" for="depth-slider">Set Depth</label>
+          <input type="range" id="depth-slider" min="0" max="300" step="10" />
+        </div>
+        <div class="control">
+          <button id="fire-btn">Fire Torpedo</button>
+        </div>
+        <div id="respawn-panel" class="respawn-panel hidden">
+          <h3>Sub Lost</h3>
+          <p id="respawn-message">You were hit!</p>
+          <p id="respawn-timer">Preparing replacement sub...</p>
+          <button id="respawn-btn" disabled>Respawn</button>
+        </div>
+      </section>
+    </main>
+  </div>
 
-    <script src="/static/main.js"></script>
-  </body>
+  <script src="/static/main.js"></script>
+</body>
+
 </html>

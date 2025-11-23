@@ -1,32 +1,9 @@
-import math
-import random
 import time
-from typing import Dict, List
-
 from flask import Flask, send_from_directory, request
 from flask_socketio import SocketIO, emit
 
-# -----------------------------------------------------------------------------
-# Game tuning constants (easy to tweak for balancing experiments)
-# -----------------------------------------------------------------------------
-WORLD_SIZE = 2000.0
-MAX_DEPTH = 300.0
-TICK_RATE = 5  # updates per second
-TORPEDO_SPEED = 30.0  # world units per second
-SUB_MAX_SPEED = 20.0  # world units per second
-SONAR_RANGE = 500.0
-HIT_RADIUS = 12.0  # cylindrical radius of the submarine hull
-RESPAWN_TIME = 10.0
-
-# Movement modelling
-MAX_TURN_RATE = 25.0  # degrees per second
-MAX_ACCELERATION = 20.0  # speed change per second
-BASE_DIVE_RATE = 8.0  # meters per second when stopped
-DIVE_RATE_PER_SPEED = 0.15  # extra dive rate per unit of speed
-
-# Hull modelling (used for collisions)
-SUB_LENGTH = 55.0  # meters
-SPEED_ORDER_MAX = 4.0
+from game.engine import GameEngine
+from game.constants import TICK_RATE
 
 # -----------------------------------------------------------------------------
 # Flask + Socket.IO setup
@@ -36,296 +13,64 @@ app.config["SECRET_KEY"] = "u-boat-secret"
 socketio = SocketIO(app, async_mode="threading")
 
 # -----------------------------------------------------------------------------
-# Global game state containers
+# Game Engine Instance
 # -----------------------------------------------------------------------------
-submarines: Dict[str, dict] = {}
-torpedoes: List[dict] = []
+game_engine = GameEngine()
 game_loop_started = False
 
 
 # -----------------------------------------------------------------------------
-def random_position():
-    return random.uniform(0, WORLD_SIZE), random.uniform(0, WORLD_SIZE)
-
-
-def spawn_submarine(username: str, sid: str) -> dict:
-    """Create and return a new submarine model."""
-    x, y = random_position()
-    sub = {
-        "id": sid,
-        "username": username,
-        "x": x,
-        "y": y,
-        "depth": 50.0,
-        "heading": random.uniform(0, 359),
-        "speed": 0.0,
-        "target_heading": None,
-        "target_speed": 0.0,
-        "target_depth": 50.0,
-        "alive": True,
-        "last_sonar_ping": 0.0,
-        "respawn_at": None,
-        "respawn_ready": False,
-    }
-    return sub
-
-
-def respawn_submarine(sub: dict):
-    x, y = random_position()
-    sub.update(
-        {
-            "x": x,
-            "y": y,
-            "depth": 50.0,
-            "heading": random.uniform(0, 359),
-            "speed": 0.0,
-            "target_heading": None,
-            "target_speed": 0.0,
-            "target_depth": 50.0,
-            "alive": True,
-            "respawn_at": None,
-            "respawn_ready": False,
-        }
-    )
-    socketio.emit(
-        "respawn_confirmed",
-        {"message": "You are back in the fight.", "x": x, "y": y},
-        room=sub["id"],
-    )
-
-
-def wrap_position(value: float) -> float:
-    if value < 0:
-        value += WORLD_SIZE
-    elif value >= WORLD_SIZE:
-        value -= WORLD_SIZE
-    return value
-
-
-def clamp(value: float, minimum: float, maximum: float) -> float:
-    return max(minimum, min(maximum, value))
-
-
-def angular_difference(target: float, current: float) -> float:
-    diff = (target - current + 180.0) % 360.0 - 180.0
-    return diff
-
-
-def move_towards(current: float, target: float, max_delta: float) -> float:
-    if current < target:
-        return min(target, current + max_delta)
-    return max(target, current - max_delta)
-
-
-def interpret_speed_command(command: float) -> float:
-    command = float(command)
-    if command <= SPEED_ORDER_MAX:
-        fraction = command / SPEED_ORDER_MAX
-        return clamp(fraction * SUB_MAX_SPEED, 0.0, SUB_MAX_SPEED)
-    return clamp(command, 0.0, SUB_MAX_SPEED)
-
-
+# Game Loop
 # -----------------------------------------------------------------------------
-def update_submarine(sub: dict, dt: float, now: float):
-    if sub["alive"]:
-        # Heading inertia
-        target_heading = sub.get("target_heading")
-        if target_heading is None:
-            target_heading = sub["heading"]
-        turn_amount = clamp(MAX_TURN_RATE * dt, 0.0, 360.0)
-        diff = angular_difference(target_heading, sub["heading"])
-        if abs(diff) < turn_amount:
-            sub["heading"] = target_heading % 360.0
-        else:
-            sub["heading"] = (sub["heading"] + math.copysign(turn_amount, diff)) % 360.0
+def game_loop():
+    while True:
+        # Update game state
+        events = game_engine.update()
 
-        # Speed inertia
-        target_speed = clamp(sub.get("target_speed", sub["speed"]), 0.0, SUB_MAX_SPEED)
-        sub["speed"] = move_towards(sub["speed"], target_speed, MAX_ACCELERATION * dt)
-
-        # Depth change depends on speed (subs dive slower when stopped)
-        target_depth = clamp(sub.get("target_depth", sub["depth"]), 0.0, MAX_DEPTH)
-        dive_rate = BASE_DIVE_RATE + sub["speed"] * DIVE_RATE_PER_SPEED
-        sub["depth"] = move_towards(sub["depth"], target_depth, dive_rate * dt)
-        sub["depth"] = clamp(sub["depth"], 0.0, MAX_DEPTH)
-
-        speed = clamp(sub["speed"], 0.0, SUB_MAX_SPEED)
-        heading_rad = math.radians(sub["heading"])
-        dx = math.sin(heading_rad) * speed * dt
-        dy = -math.cos(heading_rad) * speed * dt
-        sub["x"] = wrap_position(sub["x"] + dx)
-        sub["y"] = wrap_position(sub["y"] + dy)
-    else:
-        if sub["respawn_at"] and now >= sub["respawn_at"] and not sub["respawn_ready"]:
-            sub["respawn_ready"] = True
-            socketio.emit(
-                "respawn_ready",
-                {"message": "You may respawn when ready."},
-                room=sub["id"],
-            )
-
-
-def update_torpedo(torp: dict, dt: float):
-    heading_rad = math.radians(torp["heading"])
-    torp["x"] = wrap_position(
-        torp["x"] + math.sin(heading_rad) * TORPEDO_SPEED * dt
-    )
-    torp["y"] = wrap_position(
-        torp["y"] - math.cos(heading_rad) * TORPEDO_SPEED * dt
-    )
-
-
-def handle_torpedo_hits(now: float):
-    global torpedoes
-    surviving_torps = []
-    for torp in torpedoes:
-        if torp["expires_at"] <= now:
-            continue
-        hit = False
-        for sub in submarines.values():
-            if not sub["alive"]:
-                continue
-            if sub["id"] == torp["owner"]:
-                continue
-            if torpedo_hits_sub(torp, sub):
-                sub["alive"] = False
-                sub["respawn_at"] = now + RESPAWN_TIME
-                sub["respawn_ready"] = False
-                attacker = submarines.get(torp["owner"])
-                attacker_name = attacker["username"] if attacker else "Another captain"
+        # Process events
+        for event in events:
+            if event["type"] == "respawn_ready":
+                socketio.emit(
+                    "respawn_ready",
+                    {"message": "You may respawn when ready."},
+                    room=event["sid"],
+                )
+            elif event["type"] == "hit":
                 socketio.emit(
                     "sub_hit",
                     {
-                        "victim_id": sub["id"],
-                        "victim_username": sub["username"],
-                        "attacker_username": attacker_name,
+                        "victim_id": event["victim_id"],
+                        "victim_username": event["victim_name"],
+                        "attacker_username": event["attacker_name"],
                     },
                 )
                 socketio.emit(
                     "hit_confirmed",
                     {
-                        "victim_id": sub["id"],
-                        "victim_username": sub["username"],
+                        "victim_id": event["victim_id"],
+                        "victim_username": event["victim_name"],
                     },
-                    room=torp["owner"],
+                    room=event["attacker_id"],
                 )
                 socketio.emit(
                     "you_were_hit",
                     {
-                        "by_username": attacker_name,
-                        "respawn_available_at": sub["respawn_at"],
+                        "by_username": event["attacker_name"],
+                        "respawn_available_at": event["respawn_at"],
                     },
-                    room=sub["id"],
+                    room=event["victim_id"],
                 )
-                hit = True
-                break
-        if not hit:
-            surviving_torps.append(torp)
-    torpedoes = surviving_torps
 
-
-def torpedo_hits_sub(torp: dict, sub: dict) -> bool:
-    # Represent the submarine as a horizontal capsule to account for length/orientation
-    heading_rad = math.radians(sub["heading"])
-    dir_x = math.sin(heading_rad)
-    dir_y = -math.cos(heading_rad)
-    half_length = SUB_LENGTH / 2.0
-
-    rel_x = torp["x"] - sub["x"]
-    rel_y = torp["y"] - sub["y"]
-    along = rel_x * dir_x + rel_y * dir_y
-    along_clamped = clamp(along, -half_length, half_length)
-    closest_x = sub["x"] + dir_x * along_clamped
-    closest_y = sub["y"] + dir_y * along_clamped
-
-    cross_x = torp["x"] - closest_x
-    cross_y = torp["y"] - closest_y
-    horizontal_dist = math.sqrt(cross_x * cross_x + cross_y * cross_y)
-    dz = torp["depth"] - sub["depth"]
-    distance = math.sqrt(horizontal_dist * horizontal_dist + dz * dz)
-    return distance <= HIT_RADIUS
-
-
-def visible_contacts(sub: dict, now: float):
-    contacts = []
-    for other in submarines.values():
-        if other["id"] == sub["id"] or not other["alive"]:
-            continue
-        dx = other["x"] - sub["x"]
-        dy = other["y"] - sub["y"]
-        dz = other["depth"] - sub["depth"]
-        dist = math.sqrt(dx * dx + dy * dy + dz * dz)
-        if dist <= SONAR_RANGE:
-            recent_ping = (now - sub["last_sonar_ping"] <= 5.0) or (
-                now - other["last_sonar_ping"] <= 5.0
-            )
-            if recent_ping:
-                contacts.append(
-                    {
-                        "id": other["id"],
-                        "username": other["username"],
-                        "x": other["x"],
-                        "y": other["y"],
-                        "depth": other["depth"],
-                    }
-                )
-    return contacts
-
-
-def build_state_for(sub: dict, now: float):
-    if sub["alive"]:
-        you = {
-            "id": sub["id"],
-            "username": sub["username"],
-            "x": sub["x"],
-            "y": sub["y"],
-            "depth": sub["depth"],
-            "heading": sub["heading"],
-            "speed": sub["speed"],
-            "alive": True,
-        }
-    else:
-        you = {
-            "id": sub["id"],
-            "username": sub["username"],
-            "alive": False,
-            "respawn_at": sub["respawn_at"],
-            "respawn_ready": sub["respawn_ready"],
-        }
-
-    state = {
-        "you": you,
-        "torpedoes": [
-            {"id": t["id"], "x": t["x"], "y": t["y"], "depth": t["depth"]}
-            for t in torpedoes
-        ],
-        "sonar_contacts": visible_contacts(sub, now),
-        "world_size": WORLD_SIZE,
-        "max_depth": MAX_DEPTH,
-        "sonar_range": SONAR_RANGE,
-        "sub_max_speed": SUB_MAX_SPEED,
-    }
-    return state
-
-
-def game_loop():
-    last_tick = time.time()
-    while True:
-        now = time.time()
-        dt = now - last_tick
-        last_tick = now
-
-        for sub in list(submarines.values()):
-            update_submarine(sub, dt, now)
-
-        for torp in torpedoes:
-            update_torpedo(torp, dt)
-
-        handle_torpedo_hits(now)
-
-        for sid, sub in list(submarines.items()):
-            state = build_state_for(sub, now)
-            socketio.emit("state_update", state, room=sid)
+        # Broadcast state to all players
+        # Note: In a real large-scale game, we wouldn't iterate all players here.
+        # We might only send updates to players who need them.
+        # But for this MVP, we iterate the known sockets or just the engine players.
+        # Since we don't have a list of all connected SIDs easily accessible without
+        # tracking them, we can iterate the players in the engine.
+        for sid in list(game_engine.submarines.keys()):
+            state = game_engine.get_state(sid)
+            if state:
+                socketio.emit("state_update", state, room=sid)
 
         socketio.sleep(1.0 / TICK_RATE)
 
@@ -349,11 +94,11 @@ def on_connect():
 @socketio.on("disconnect")
 def on_disconnect():
     sid = request.sid
-    sub = submarines.pop(sid, None)
+    sub = game_engine.remove_player(sid)
     if sub:
         socketio.emit(
             "system_message",
-            {"message": f"{sub['username']} has left the hunt."},
+            {"message": f"{sub.username} has left the hunt."},
             skip_sid=sid,
         )
 
@@ -362,8 +107,7 @@ def on_disconnect():
 def on_join_game(data):
     sid = request.sid
     username = data.get("username", "Captain")
-    sub = spawn_submarine(username, sid)
-    submarines[sid] = sub
+    game_engine.add_player(sid, username)
     emit("joined", {"id": sid, "username": username})
     socketio.emit(
         "system_message",
@@ -375,98 +119,61 @@ def on_join_game(data):
 @socketio.on("update_controls")
 def on_update_controls(data):
     sid = request.sid
-    sub = submarines.get(sid)
-    if not sub or not sub["alive"]:
-        return
-    sub["target_heading"] = float(data.get("heading", sub.get("target_heading", sub["heading"]))) % 360.0
-    speed_command = data.get("speed", sub.get("target_speed", sub["speed"]))
-    sub["target_speed"] = interpret_speed_command(speed_command)
-    sub["target_depth"] = clamp(
-        float(data.get("depth", sub.get("target_depth", sub["depth"]))), 0.0, MAX_DEPTH
-    )
+    game_engine.update_controls(sid, data)
 
 
 @socketio.on("sonar_ping")
 def on_sonar_ping():
     sid = request.sid
-    sub = submarines.get(sid)
-    if not sub or not sub["alive"]:
-        return
-    now = time.time()
-    sub["last_sonar_ping"] = now
-
-    contacts = []
-    for other in submarines.values():
-        if other["id"] == sid or not other["alive"]:
-            continue
-        dx = other["x"] - sub["x"]
-        dy = other["y"] - sub["y"]
-        dz = other["depth"] - sub["depth"]
-        dist = math.sqrt(dx * dx + dy * dy + dz * dz)
-        if dist <= SONAR_RANGE:
-            bearing = (math.degrees(math.atan2(dx, -dy)) + 360.0) % 360.0
-            contacts.append(
-                {
-                    "id": other["id"],
-                    "username": other["username"],
-                    "distance": round(dist, 1),
-                    "bearing": round(bearing, 1),
-                    "depth": round(other["depth"], 1),
-                }
-            )
-            emit(
+    result = game_engine.perform_sonar_ping(sid)
+    
+    # Send results to the pinger
+    emit("sonar_result", {"contacts": result["contacts"]})
+    
+    # Notify those who were pinged
+    if "detected_by" in result:
+        for detection in result["detected_by"]:
+            socketio.emit(
                 "sonar_ping_detected",
                 {
-                    "pinging_id": sub["id"],
-                    "pinging_username": sub["username"],
-                    "approx_distance": round(dist, 1),
+                    "pinging_id": detection["pinger_id"],
+                    "pinging_username": detection["pinger_name"],
+                    "approx_distance": detection["dist"],
                 },
-                room=other["id"],
+                room=detection["target_id"],
             )
-
-    emit("sonar_result", {"contacts": contacts})
 
 
 @socketio.on("fire_torpedo")
 def on_fire_torpedo():
     sid = request.sid
-    sub = submarines.get(sid)
-    if not sub or not sub["alive"]:
-        return
-    now = time.time()
-    torpedo = {
-        "id": f"torp-{now}-{random.randint(0, 9999)}",
-        "owner": sid,
-        "x": sub["x"],
-        "y": sub["y"],
-        "depth": sub["depth"],
-        "heading": sub["heading"],
-        "created_at": now,
-        "expires_at": now + 20.0,
-    }
-    torpedoes.append(torpedo)
-    emit("torpedo_fired", {"id": torpedo["id"]})
+    torp_id = game_engine.fire_torpedo(sid)
+    if torp_id:
+        emit("torpedo_fired", {"id": torp_id})
 
 
 @socketio.on("request_respawn")
 def on_request_respawn():
     sid = request.sid
-    sub = submarines.get(sid)
-    if not sub or sub["alive"]:
-        return
-    now = time.time()
-    if not sub["respawn_at"] or now < sub["respawn_at"]:
+    success = game_engine.request_respawn(sid)
+    if success:
+        sub = game_engine.get_player(sid)
+        socketio.emit(
+            "system_message",
+            {"message": f"{sub.username} has re-entered the hunt."},
+            skip_sid=sid,
+        )
+        # The state update loop will pick up the new position and send it
+        # But we can also send a confirmation message
+        emit(
+            "respawn_confirmed",
+            {"message": "You are back in the fight.", "x": sub.x, "y": sub.y},
+        )
+    else:
         emit(
             "respawn_not_ready",
             {"message": "Hold tight, the crew is still preparing a new sub."},
         )
-        return
-    respawn_submarine(sub)
-    socketio.emit(
-        "system_message",
-        {"message": f"{sub['username']} has re-entered the hunt."},
-        skip_sid=sid,
-    )
 
 
 # -----------------------------------------------------------------------------
